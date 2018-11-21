@@ -1,7 +1,7 @@
-build_tag: Flic-Test-01
+build_tag: Felicity-Test-01
 increment_tag: true
 keep_ami_users: false
 regions:
-- AU
+- ap-southeast-2
 subnets:
 - subnet-ChangeMe

@@ -27,18 +27,20 @@ The following commands should be run from the project root, where
 Run the program with:
 
 ```
-./RunPacker.sh -d <script ancestor> [-b] [-f <script update config file>] [-x <copy exclusions file>]
+./RunPacker.sh -p <script ancestor> [-b] [-d] [-f <script update config file>] [-x <copy exclusions file>]
 ```
 
 ...where:
  
-* *-d* specifies the ancestor directory of the Packer script and its
-  dependencies.  All children of this directory are copied to the
-  `build/packer-project` directory and mounted as a volume in the Packer
-  container.
+* *-p* specifies the ancestor path of the Packer script and its dependencies.
+  All children of this directory are copied to the `build/packer-project`
+  directory and mounted as a volume in the Packer container.
 * *-b* (optional) specifies the container should be brought down and rebuilt.
   This should be used when the Docker image (environment or arguments) needs to
   change.
+* *-d* (optional) specifies Packer is to be run in debug mode.  This will stop
+  Packer being executed when the container starts - you will need to log in to
+  the container and run DebugPacker.sh to step through the Packer script.
 * *-f* (optional) specifies a YAML file that describes how to update settings in
   the Packer script.  This is used to make alterations on the **copied** script,
   which can be useful for testing.  See the
@@ -47,12 +49,12 @@ Run the program with:
 * *-x* (optional) specifies a plain text file containing a list of directories
   and/or files (one per line) that should **not** be copied over to the
   container.  The paths for these are relative to the ancestor path specified
-  with the *-d* flag.
+  with the *-p* flag.
 
 **Note:** The Packer script itself is specified as an environment variable in
 the `docker-compose.yml` file.  The path, like those specified in the copy
 exclusion list (*-x* flag), is relative to the ancestor path specified with the
-*-d* flag.
+*-p* flag.
  
 #### Checking logs  
 The *packer-ansible* container will not display output from the script
@@ -136,7 +138,8 @@ of which is mandatory:
 
 **Note:**  The first time the program is run, this file is backed up to 
 preserve the original `build_tag` value.  The backup file has the same name,
-with `.orig` appended.
+with `.orig` appended.  Due to limitations in `yq`, any comments in this file
+will be lost and must be restored from the backed up original if required.
 
 ### Troubleshooting
 If you see 404 errors when trying to run the program, you need to review the

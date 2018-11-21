@@ -4,16 +4,22 @@
 # This script runs a Packer script inside a Docker container.  Ansible is
 # available in the container, should it be required.
 #
-# The ancestor directory of all Packer components is specified on the command
-# line (-d) and is copied to the build directory, where it is mounted as a
-# volume into the container.  The script update config file flag (-f) points to
-# a file that tells the program what changes should be made to the Packer script
-# (in turn passed as an environment variable in docker-compose.yml).  Changes
-# can include:
+# The ancestor path of all Packer components is specified on the command line
+# (-p) and is copied to the build directory, where it is mounted as a volume
+# into the container.  The script update config file flag (-f) points to a file
+# that tells the program what changes should be made to the Packer script (in
+# turn passed as an environment variable in docker-compose.yml).  Changes can
+# include:
 # - Setting the build tag
 # - Retention of AMI user settings
 # - Which AWS regions should be targeted
 # - Which subnets to use in the region(s) (specified per region)
+#
+# Packer can be run in debug mode, but you must log in to the container and do
+# so manually.  If you specify debug mode (-d), the Packer script will not run
+# - instead, the required command will be written to
+# /opt/packer-project/DebugPacker.sh in the container, made executable for your
+# convenience.
 #
 # If the environment or arguments to Docker need to change substantially,
 # use the -b flag to bring the containers down and rebuild them.  The -x flag
@@ -29,7 +35,8 @@
 ################################################################################
 # File and command info.
 ################################################################################
-readonly USAGE="${0} -d <script ancestor> [-b(uild)] [-f <script update config file>] [-x <copy exclusions file>]"
+readonly USAGE="${0} -p <script ancestor> [-b(uild)] [-d(ebug)] [-f <script update config file>] [-x <copy exclusions file>]"
+readonly ALLOWED_FLAGS="^-[bdfpx]$"
 readonly PACKER_SCRIPT="$("yq" "r" "docker-compose.yml" \
                           "services.packer_ansible.environment" | \
                           "sed" "-n" \
@@ -51,6 +58,7 @@ readonly COPY_ERROR=95
 # Command line switch environment variables.
 ################################################################################
 copy_exclusion_file=""
+debug="${FALSE}"
 filter_config_file=""
 packer_dir=""
 rebuild="${FALSE}"
@@ -70,7 +78,6 @@ subnet_list=()
 # Builds the subnet part of the jq filter for the Packer script.
 ################################################################################
 build_subnet_filter() {
-
   local subnet_regions=("${region_list[@]}")
   local subnet_filter=""
 
@@ -81,16 +88,16 @@ build_subnet_filter() {
     done < <( jq -r .builders[].region "${PACKER_SCRIPT}" )
   fi
 
-  if [[ ${#subnet_list[@]} -gt ${#subnet_regions[@]} ]]; then
+  if [[ ${#subnet_list[@]} -eq ${#subnet_regions[@]} ]]; then
+    for ((subnet_index=0; subnet_index < ${#subnet_list[@]}; subnet_index++)); do
+      subnet_filter="${subnet_filter} (.builders[] | "
+      subnet_filter+="select(.name==\"${subnet_regions[${subnet_index}]}\") "
+      subnet_filter+=".subnet_id) |= \"${subnet_list[${subnet_index}]}\" |"
+    done
+  elif [[ ${#subnet_list[@]} -ne 0 ]]; then
     exit_with_error "${BAD_ARGUMENT_ERROR}" \
-                    "Cannot specify more subnet changes than regions!  Usage:  ${USAGE}"
+                    "Cannot specify a different number of subnet changes to regions!  Usage:  ${USAGE}"
   fi
-
-  for ((subnet_index=0; subnet_index < ${#subnet_list[@]}; subnet_index++)); do
-    subnet_filter="${subnet_filter} (.builders[] | "
-    subnet_filter+="select(.name==\"${subnet_regions[${subnet_index}]}\") "
-    subnet_filter+=".subnet_id) |= \"${subnet_list[${subnet_index}]}\" |"
-  done
 
   if [[ "${subnet_filter}" != "" ]]; then
     # Trim trailing pipe.
@@ -111,7 +118,7 @@ check_args() {
   while [[ ${#} -gt 0 ]]; do
     case "${1}" in
       -b)
-        if ! [[ "${2}" =~ ^-[bdfx]$ ]] && [[ ${#} -gt 1 ]]; then
+        if ! [[ "${2}" =~ ${ALLOWED_FLAGS} ]] && [[ ${#} -gt 1 ]]; then
           exit_with_error "${BAD_ARGUMENT_ERROR}" \
                           "Option ${1} does not require an argument.  Usage:  ${USAGE}"
         else
@@ -119,21 +126,15 @@ check_args() {
         fi
         ;;
       -d)
-        while ! [[ "${2}" =~ ^-[bdfx]$ ]] && [[ ${#} -gt 1 ]]; do
-          packer_dir="${2}"
-          shift
-        done
-
-        if [[ "${packer_dir}" == "" ]]; then
+        if ! [[ "${2}" =~ ${ALLOWED_FLAGS} ]] && [[ ${#} -gt 1 ]]; then
           exit_with_error "${BAD_ARGUMENT_ERROR}" \
-                          "Option ${1} requires an argument.  Usage:  ${USAGE}"
-        elif [[ ! "${packer_dir}" =~ /$ ]]; then
-          # Ensure we have trailing '/' so rsync copies content rather than dir.
-          packer_dir="${packer_dir}/"
+                          "Option ${1} does not require an argument.  Usage:  ${USAGE}"
+        else
+          debug="${TRUE}"
         fi
         ;;
       -f)
-        while ! [[ "${2}" =~ ^-[bdfx]$ ]] && [[ ${#} -gt 1 ]]; do
+        while ! [[ "${2}" =~ ${ALLOWED_FLAGS} ]] && [[ ${#} -gt 1 ]]; do
           filter_config_file="${2}"
           shift
         done
@@ -146,8 +147,22 @@ check_args() {
                           "No valid config file specified!  Usage:  ${USAGE}"
         fi
         ;;
+      -p)
+        while ! [[ "${2}" =~ ${ALLOWED_FLAGS} ]] && [[ ${#} -gt 1 ]]; do
+          packer_dir="${2}"
+          shift
+        done
+
+        if [[ "${packer_dir}" == "" ]]; then
+          exit_with_error "${BAD_ARGUMENT_ERROR}" \
+                          "Option ${1} requires an argument.  Usage:  ${USAGE}"
+        elif [[ ! "${packer_dir}" =~ /$ ]]; then
+          # Ensure we have trailing '/' so rsync copies content rather than dir.
+          packer_dir="${packer_dir}/"
+        fi
+        ;;
       -x)
-        while ! [[ "${2}" =~ ^-[bdfx]$ ]] && [[ ${#} -gt 1 ]]; do
+        while ! [[ "${2}" =~ ${ALLOWED_FLAGS} ]] && [[ ${#} -gt 1 ]]; do
           copy_exclusion_file="${2}"
           shift
         done
@@ -198,7 +213,7 @@ filter_script() {
   fi
 
   if [[ ${#region_list[@]} -ne 0 ]]; then
-    region_filter="select([.name] | inside(["
+    region_filter="select([.region] | inside(["
     for next_region in "${region_list[@]}"; do
       region_filter="${region_filter}\"${next_region}\","
     done
@@ -211,6 +226,8 @@ filter_script() {
 
     if [[ "${SUBNET_FILTER}" != "" ]]; then
       filter+=") | ${SUBNET_FILTER}"
+    else
+      filter+=")"
     fi
   elif ((keep_ami_users == FALSE)); then
     filter="del(.builders[] | .ami_users)"
@@ -269,6 +286,8 @@ read_filter_config() {
   local -r INCREMENT_TAG="$("yq" "r" "${filter_config_file}" "increment_tag")"
   local -r KEEP_AMI_USERS="$("yq" "r" "${filter_config_file}" "keep_ami_users")"
 
+  local temp_list=""
+
   shopt -s nocasematch
   if [[ "${INCREMENT_TAG}" =~ true ]]; then
     increment_tag="${TRUE}"
@@ -280,10 +299,23 @@ read_filter_config() {
 
   # Set the rest of the filter variables
   build_tag="$("yq" "r" "${filter_config_file}" "build_tag")"
-  region_list=( "$("yq" "r" "${filter_config_file}" "regions" | \
-                   "sed" "-n" 's/^\(- \)\{0,1\}\(..*\)$/\2/p')" )
-  subnet_list=( "$("yq" "r" "${filter_config_file}" "subnets" | \
-                   "sed" "-n" 's/^\(- \)\{0,1\}\(..*\)$/\2/p')" )
+
+  temp_list="$("read_filter_list" "regions")"
+  [[ "${temp_list}" != "null" ]] && region_list=( "${temp_list}" )
+
+  temp_list="$("read_filter_list" "subnets")"
+  [[ "${temp_list}" != "null" ]] && subnet_list=( "${temp_list}" )
+}
+
+
+################################################################################
+# Reads the nominated filter configuration list item, printing an empty string
+# if the target item was not found (and subsequently returns null from yq).
+################################################################################
+read_filter_list() {
+  local -r KEY="${1}"
+  echo "$("yq" "r" "${filter_config_file}" "${KEY}" | \
+          "sed" "-n" 's/^\(- \)\{0,1\}\(..*\)$/\2/p')"
 }
 
 
@@ -291,6 +323,9 @@ read_filter_config() {
 # Updates the build tag in the filter configuration file.  This function is only
 # called AFTER we have set the ${build_tag} variable because we assume it is
 # already set.
+#
+# Note: Beware, this function will remove any comments in the filter
+# configuration file!  This is a limitation of yq.
 ################################################################################
 update_filter_config() {
   local -r UPDATED_BUILD_TAG="$("awk" "-F" "[^0-9]+" \
@@ -311,8 +346,9 @@ update_filter_config() {
 # Entry point to the program.  Valid command line options are described at the
 # top of the script.
 #
-# @param ARGS Command line flags, including -d <packer dir> -f <config file> and
-#             the optional -b (build containers) and -x <copy exclusion file>.
+# @param ARGS Command line flags, including -p <packer path> -f <config file>
+#             and the optional -b (build containers), -d (run in debug mode) and
+#             -x <copy exclusion file>.
 ################################################################################
 main() {
   local -r ARGS=("${@}")

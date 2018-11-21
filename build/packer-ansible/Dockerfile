@@ -20,7 +20,7 @@ COPY hosts /etc/ansible
 RUN pip3 install ansible && \
     rm -fr ansible.tar.gz /ansible/docs /ansible/examples /ansible/packaging
 
-COPY *.sh /usr/local/bin
+COPY *.sh /usr/local/bin/
 RUN chmod u+x /usr/local/bin/*.sh
 
 ENTRYPOINT ["Entrypoint.sh"]
